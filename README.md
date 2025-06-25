@@ -2,8 +2,6 @@
 
 A powerful, browser-based tool for burning subtitles directly onto your videos. Craft perfectly subtitled videos with custom fonts, styles, and effects, all without uploading your files to a server.
 
-![Subtitle Weaver Screenshot](https://placehold.co/800x500.png?text=App+Screenshot)
-
 ## Overview
 
 Subtitle Weaver is a client-side video processing application built with Next.js and React. It leverages modern browser APIs like the Canvas and MediaRecorder APIs to perform all video manipulation directly on the user's machine. This privacy-focused approach means your video files are never sent to a server, ensuring your data remains secure.
