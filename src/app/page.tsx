@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { UploadCloud, Download, Settings2, Film, Type, ListFilter, AlertCircle, Loader2, Wand2, Droplets, Volume2, Activity } from 'lucide-react';
+import { UploadCloud, Download, Settings2, Film, Type, ListFilter, AlertCircle, Loader2, Wand2, Droplets, Volume2, Activity, Target } from 'lucide-react';
 import { FileUploadInput } from '@/components/custom/file-upload-input';
 
 const PREVIEW_TEXT = "Aa Bb Gg Yy 0123 Zz. Quick brown fox.";
@@ -232,13 +232,14 @@ function wrapWordTimings(
   ctx: CanvasRenderingContext2D,
   words: WordTiming[],
   maxWidth: number,
-  textCase: string
+  textCase: string,
+  fontSize: number
 ): WordTiming[][] {
   const lines: WordTiming[][] = [];
   let currentLine: WordTiming[] = [];
   let currentWidth = 0;
   
-  const spaceWidth = ctx.measureText(' ').width;
+  const spaceWidth = Math.max(ctx.measureText(' ').width, fontSize * 0.25);
 
   words.forEach((word) => {
     let t = word.text;
@@ -268,6 +269,77 @@ function wrapWordTimings(
   return lines;
 }
 
+function getDeterministicRandom(seedStr: string): (offset: number) => number {
+  let hash = 0;
+  for (let i = 0; i < seedStr.length; i++) {
+    hash = seedStr.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return (offset: number) => {
+    const x = Math.sin(hash + offset) * 10000;
+    return x - Math.floor(x);
+  };
+}
+
+interface TextLayout {
+  x: number;
+  y: number;
+  align: 'left' | 'center' | 'right';
+  baseline: 'top' | 'middle' | 'bottom';
+  transform: string;
+}
+
+function getDeterministicLayout(
+  seedStr: string,
+  left: number = 8,
+  right: number = 92,
+  top: number = 8,
+  bottom: number = 92
+): TextLayout {
+  const rand = getDeterministicRandom(seedStr);
+  const positionIndex = Math.floor(rand(1) * 9); // 0 to 8
+  
+  const midX = (left + right) / 2;
+  const midY = (top + bottom) / 2;
+
+  let x = midX;
+  let y = midY;
+  let align: 'left' | 'center' | 'right' = 'center';
+  let baseline: 'top' | 'middle' | 'bottom' = 'middle';
+  let transform = 'translate(-50%, -50%)';
+
+  switch (positionIndex) {
+    case 0: // Top Left
+      x = left; y = top; align = 'left'; baseline = 'top'; transform = 'translate(0, 0)';
+      break;
+    case 1: // Top Center
+      x = midX; y = top; align = 'center'; baseline = 'top'; transform = 'translate(-50%, 0)';
+      break;
+    case 2: // Top Right
+      x = right; y = top; align = 'right'; baseline = 'top'; transform = 'translate(-100%, 0)';
+      break;
+    case 3: // Mid Left
+      x = left; y = midY; align = 'left'; baseline = 'middle'; transform = 'translate(0, -50%)';
+      break;
+    case 4: // Center
+      x = midX; y = midY; align = 'center'; baseline = 'middle'; transform = 'translate(-50%, -50%)';
+      break;
+    case 5: // Mid Right
+      x = right; y = midY; align = 'right'; baseline = 'middle'; transform = 'translate(-100%, -50%)';
+      break;
+    case 6: // Bottom Left
+      x = left; y = bottom; align = 'left'; baseline = 'bottom'; transform = 'translate(0, -100%)';
+      break;
+    case 7: // Bottom Center
+      x = midX; y = bottom; align = 'center'; baseline = 'bottom'; transform = 'translate(-50%, -100%)';
+      break;
+    case 8: // Bottom Right
+      x = right; y = bottom; align = 'right'; baseline = 'bottom'; transform = 'translate(-100%, -100%)';
+      break;
+  }
+
+  return { x, y, align, baseline, transform };
+}
+
 
 export default function SubtitleWeaverPage() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -280,6 +352,11 @@ export default function SubtitleWeaverPage() {
   const [positionY, setPositionY] = useState<number>(90);
   const [subtitleMaxWidth, setSubtitleMaxWidth] = useState<number>(85);
   const [showOutline, setShowOutline] = useState<boolean>(true);
+  const [randomizePositions, setRandomizePositions] = useState<boolean>(false);
+  const [randomBoundaryLeft, setRandomBoundaryLeft] = useState<number>(10);
+  const [randomBoundaryRight, setRandomBoundaryRight] = useState<number>(90);
+  const [randomBoundaryTop, setRandomBoundaryTop] = useState<number>(10);
+  const [randomBoundaryBottom, setRandomBoundaryBottom] = useState<number>(90);
   const [textCase, setTextCase] = useState<string>('normal');
   const [textOpacity, setTextOpacity] = useState<number>(100);
   const [textEffect, setTextEffect] = useState<string>('none');
@@ -350,6 +427,81 @@ export default function SubtitleWeaverPage() {
     }
     initPreviewAnalyser();
   };
+
+  // Smoothly update previewTime at 60 FPS while the video is playing
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    let animationFrameId: number;
+    const update = () => {
+      if (!video.paused && !video.ended) {
+        setPreviewTime(video.currentTime);
+      }
+      animationFrameId = requestAnimationFrame(update);
+    };
+
+    const handlePlay = () => {
+      animationFrameId = requestAnimationFrame(update);
+    };
+
+    const handlePause = () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+
+    const handleSeeking = () => {
+      setPreviewTime(video.currentTime);
+    };
+
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('seeking', handleSeeking);
+
+    if (!video.paused && !video.ended) {
+      animationFrameId = requestAnimationFrame(update);
+    }
+
+    return () => {
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('seeking', handleSeeking);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [videoPreviewUrl]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleTrackDisable = () => {
+      if (video.textTracks) {
+        for (let i = 0; i < video.textTracks.length; i++) {
+          video.textTracks[i].mode = 'disabled';
+        }
+      }
+    };
+
+    handleTrackDisable();
+    
+    video.addEventListener('play', handleTrackDisable);
+    video.addEventListener('playing', handleTrackDisable);
+    video.addEventListener('seeking', handleTrackDisable);
+    video.addEventListener('seeked', handleTrackDisable);
+    video.addEventListener('loadedmetadata', handleTrackDisable);
+    video.addEventListener('loadeddata', handleTrackDisable);
+
+    const timer = setTimeout(handleTrackDisable, 500);
+
+    return () => {
+      video.removeEventListener('play', handleTrackDisable);
+      video.removeEventListener('playing', handleTrackDisable);
+      video.removeEventListener('seeking', handleTrackDisable);
+      video.removeEventListener('seeked', handleTrackDisable);
+      video.removeEventListener('loadedmetadata', handleTrackDisable);
+      video.removeEventListener('loadeddata', handleTrackDisable);
+      clearTimeout(timer);
+    };
+  }, [videoPreviewUrl]);
 
 
   useEffect(() => {
@@ -647,6 +799,7 @@ export default function SubtitleWeaverPage() {
     
 
     videoElement.onloadedmetadata = async () => {
+        await document.fonts.ready;
         recorder.start();
         videoElement.play();
 
@@ -728,20 +881,45 @@ export default function SubtitleWeaverPage() {
             if (ctx) {
               ctx.globalAlpha = textOpacity / 100;
               
-              const textX = canvas.width * (positionX / 100);
-              const textY = canvas.height * (positionY / 100);
-              const fontSetting = `${fontSize}px ${loadedFontName || "'Inter', sans-serif"}`;
+              let textX = canvas.width * (positionX / 100);
+              let textY = canvas.height * (positionY / 100);
+              let alignSetting: 'left' | 'center' | 'right' = 'center';
+              let baselineSetting: 'top' | 'middle' | 'bottom' = 'middle';
+
+              if (randomizePositions) {
+                const layout = getDeterministicLayout(
+                  `sub_${activeSub.id}_${activeSub.text.length}`,
+                  randomBoundaryLeft,
+                  randomBoundaryRight,
+                  randomBoundaryTop,
+                  randomBoundaryBottom
+                );
+                textX = canvas.width * (layout.x / 100);
+                textY = canvas.height * (layout.y / 100);
+                alignSetting = layout.align;
+                baselineSetting = layout.baseline;
+              }
+
+              const fontSetting = `${fontSize}px "${loadedFontName || 'Inter'}", sans-serif`;
               const maxW = canvas.width * (subtitleMaxWidth / 100);
 
               if (activeSub.words && activeSub.words.length > 0) {
                 // Word-by-word drawing with wrapping
+                // Use textAlign='left' because we manually compute each word's X position.
+                // The alignSetting is applied in the manual currentX calculation below.
                 ctx.font = fontSetting;
                 ctx.textAlign = 'left';
-                ctx.textBaseline = 'middle';
+                ctx.textBaseline = baselineSetting;
 
-                const wrappedWordLines = wrapWordTimings(ctx, activeSub.words, maxW, textCase);
+                const wrappedWordLines = wrapWordTimings(ctx, activeSub.words, maxW, textCase, fontSize);
                 const lineGap = fontSize * 1.2;
-                const startY = textY - ((wrappedWordLines.length - 1) * lineGap) / 2;
+                
+                let startY = textY;
+                if (baselineSetting === 'middle') {
+                  startY = textY - ((wrappedWordLines.length - 1) * lineGap) / 2;
+                } else if (baselineSetting === 'bottom') {
+                  startY = textY - (wrappedWordLines.length - 1) * lineGap;
+                }
 
                 wrappedWordLines.forEach((lineWords, lineIndex) => {
                   const currentLineY = startY + lineIndex * lineGap;
@@ -753,11 +931,16 @@ export default function SubtitleWeaverPage() {
                     return { ...w, text: t };
                   });
 
-                  const spaceWidth = ctx.measureText(' ').width;
+                  const spaceWidth = Math.max(ctx.measureText(' ').width, fontSize * 0.25);
                   const wordWidths = formattedWords.map(w => ctx.measureText(w.text).width);
                   const totalWidth = wordWidths.reduce((sum, w) => sum + w, 0) + spaceWidth * (formattedWords.length - 1);
 
-                  let currentX = textX - totalWidth / 2;
+                  let currentX = textX;
+                  if (alignSetting === 'center') {
+                    currentX = textX - totalWidth / 2;
+                  } else if (alignSetting === 'right') {
+                    currentX = textX - totalWidth;
+                  }
 
                   formattedWords.forEach((word, wordIndex) => {
                     const wordWidth = wordWidths[wordIndex];
@@ -817,8 +1000,8 @@ export default function SubtitleWeaverPage() {
               } else {
                 // Static centered drawing with wrapping
                 ctx.font = fontSetting;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
+                ctx.textAlign = alignSetting;
+                ctx.textBaseline = baselineSetting;
                 ctx.fillStyle = textColor;
                 
                 let subText = activeSub.text;
@@ -827,7 +1010,13 @@ export default function SubtitleWeaverPage() {
 
                 const wrappedLines = wrapText(ctx, subText, maxW);
                 const lineGap = fontSize * 1.2;
-                const startY = textY - ((wrappedLines.length - 1) * lineGap) / 2;
+                
+                let startY = textY;
+                if (baselineSetting === 'middle') {
+                  startY = textY - ((wrappedLines.length - 1) * lineGap) / 2;
+                } else if (baselineSetting === 'bottom') {
+                  startY = textY - (wrappedLines.length - 1) * lineGap;
+                }
 
                 wrappedLines.forEach((line, lineIndex) => {
                   const currentLineY = startY + lineIndex * lineGap;
@@ -896,26 +1085,6 @@ export default function SubtitleWeaverPage() {
   
   const canSubmit = !!videoFile && !!subtitleFile && !isProcessing;
 
-  const subtitlePreviewStyle: React.CSSProperties = {
-    position: 'absolute',
-    left: `${positionX}%`,
-    top: `${positionY}%`,
-    opacity: textOpacity / 100,
-    transform: 'translate(-50%, -50%)',
-    fontSize: `${fontSize / (TARGET_VIDEO_HEIGHT / (videoRef.current?.clientHeight || TARGET_VIDEO_HEIGHT))}px`, // Scale font size for preview
-    fontFamily: previewFontFamily,
-    color: textColor,
-    textShadow: showOutline ? `-1px -1px 0 ${outlineColor}, 1px -1px 0 ${outlineColor}, -1px 1px 0 ${outlineColor}, 1px 1px 0 ${outlineColor}, 0px 0px ${fontSize/20}px ${outlineColor}` : 'none',
-    textAlign: 'center',
-    width: `${subtitleMaxWidth}%`,
-    maxWidth: 'none',
-    pointerEvents: 'none',
-    lineHeight: '1.2',
-    whiteSpace: 'pre-wrap',
-    zIndex: 10,
-    textTransform: textCase === 'uppercase' ? 'uppercase' : textCase === 'lowercase' ? 'lowercase' : 'none',
-  };
-
   const activePreviewSub = subtitleEntries.find(
     s => previewTime >= s.startTime && previewTime <= s.endTime
   );
@@ -924,6 +1093,39 @@ export default function SubtitleWeaverPage() {
   if (!displayedPreviewSub && subtitleEntries.length > 0 && previewTime === 0) {
     displayedPreviewSub = subtitleEntries[0];
   }
+
+  const getSubLayout = () => {
+    if (!randomizePositions || !displayedPreviewSub) return null;
+    return getDeterministicLayout(
+      `sub_${displayedPreviewSub.id}_${displayedPreviewSub.text.length}`,
+      randomBoundaryLeft,
+      randomBoundaryRight,
+      randomBoundaryTop,
+      randomBoundaryBottom
+    );
+  };
+
+  const layoutCoords = getSubLayout();
+
+  const subtitlePreviewStyle: React.CSSProperties = {
+    position: 'absolute',
+    left: layoutCoords ? `${layoutCoords.x}%` : `${positionX}%`,
+    top: layoutCoords ? `${layoutCoords.y}%` : `${positionY}%`,
+    opacity: textOpacity / 100,
+    transform: layoutCoords ? layoutCoords.transform : 'translate(-50%, -50%)',
+    fontSize: `${fontSize / (TARGET_VIDEO_HEIGHT / (videoRef.current?.clientHeight || TARGET_VIDEO_HEIGHT))}px`, // Scale font size for preview
+    fontFamily: previewFontFamily,
+    color: textColor,
+    textShadow: showOutline ? `-1px -1px 0 ${outlineColor}, 1px -1px 0 ${outlineColor}, -1px 1px 0 ${outlineColor}, 1px 1px 0 ${outlineColor}, 0px 0px ${fontSize/20}px ${outlineColor}` : 'none',
+    textAlign: layoutCoords ? layoutCoords.align : 'center',
+    width: `${subtitleMaxWidth}%`,
+    maxWidth: 'none',
+    pointerEvents: 'none',
+    lineHeight: '1.2',
+    whiteSpace: 'pre-wrap',
+    zIndex: 10,
+    textTransform: textCase === 'uppercase' ? 'uppercase' : textCase === 'lowercase' ? 'lowercase' : 'none',
+  };
 
   const renderPreviewSub = () => {
     if (!displayedPreviewSub) {
@@ -937,8 +1139,16 @@ export default function SubtitleWeaverPage() {
       return <span style={{ color: textColor }}>{subText}</span>;
     }
 
+    const justifyClass = layoutCoords
+      ? layoutCoords.align === 'left' 
+        ? 'justify-start' 
+        : layoutCoords.align === 'right' 
+          ? 'justify-end' 
+          : 'justify-center'
+      : 'justify-center';
+
     return (
-      <span className="inline-flex flex-wrap justify-center gap-x-[0.25em]">
+      <span className={`inline-flex flex-wrap ${justifyClass} gap-x-[0.25em] w-full`}>
         {displayedPreviewSub.words.map((word, index) => {
           const isFuture = previewTime < word.timestamp;
           const isActive = previewTime >= word.timestamp && previewTime <= word.timestamp + word.duration;
@@ -1039,6 +1249,84 @@ export default function SubtitleWeaverPage() {
                   <Label htmlFor="show-outline" className="text-sm">Show Subtitle Outline</Label>
                   <Switch id="show-outline" name="showOutline" checked={showOutline} onCheckedChange={setShowOutline} aria-label="Toggle subtitle outline"/>
                 </div>
+                 <div className="flex items-center justify-between space-x-2 pt-2">
+                  <Label htmlFor="randomize-positions" className="text-sm">Random & Bouncing Positions</Label>
+                  <Switch id="randomize-positions" name="randomizePositions" checked={randomizePositions} onCheckedChange={setRandomizePositions} aria-label="Toggle random and bouncing positions"/>
+                </div>
+                {randomizePositions && (
+                  <div className="space-y-3 p-3 bg-muted/40 rounded-lg border border-border mt-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <div className="text-xs font-semibold flex items-center gap-1.5 text-primary">
+                      <Target size={14} />
+                      Random Position Boundary Box
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Label className="flex justify-between text-[11px] font-medium">
+                        <span>Horizontal Limits:</span>
+                        <span>{randomBoundaryLeft}% - {randomBoundaryRight}%</span>
+                      </Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <Label htmlFor="random-boundary-left" className="text-[10px] text-muted-foreground block">Min X</Label>
+                          <Slider
+                            id="random-boundary-left"
+                            min={0}
+                            max={Math.max(0, randomBoundaryRight - 5)}
+                            step={1}
+                            value={[randomBoundaryLeft]}
+                            onValueChange={(val) => setRandomBoundaryLeft(val[0])}
+                            aria-label="Minimum random horizontal percent"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="random-boundary-right" className="text-[10px] text-muted-foreground block">Max X</Label>
+                          <Slider
+                            id="random-boundary-right"
+                            min={Math.min(100, randomBoundaryLeft + 5)}
+                            max={100}
+                            step={1}
+                            value={[randomBoundaryRight]}
+                            onValueChange={(val) => setRandomBoundaryRight(val[0])}
+                            aria-label="Maximum random horizontal percent"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="flex justify-between text-[11px] font-medium">
+                        <span>Vertical Limits:</span>
+                        <span>{randomBoundaryTop}% - {randomBoundaryBottom}%</span>
+                      </Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <Label htmlFor="random-boundary-top" className="text-[10px] text-muted-foreground block">Min Y</Label>
+                          <Slider
+                            id="random-boundary-top"
+                            min={0}
+                            max={Math.max(0, randomBoundaryBottom - 5)}
+                            step={1}
+                            value={[randomBoundaryTop]}
+                            onValueChange={(val) => setRandomBoundaryTop(val[0])}
+                            aria-label="Minimum random vertical percent"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="random-boundary-bottom" className="text-[10px] text-muted-foreground block">Max Y</Label>
+                          <Slider
+                            id="random-boundary-bottom"
+                            min={Math.min(100, randomBoundaryTop + 5)}
+                            max={100}
+                            step={1}
+                            value={[randomBoundaryBottom]}
+                            onValueChange={(val) => setRandomBoundaryBottom(val[0])}
+                            aria-label="Maximum random vertical percent"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                  <div className="space-y-2 pt-2">
                   <Label htmlFor="text-opacity" className="flex justify-between items-center"><span className="flex items-center gap-2"><Droplets size={16}/> Opacity:</span> <span>{textOpacity}%</span></Label>
                   <Slider id="text-opacity" min={0} max={100} step={1} value={[textOpacity]} onValueChange={(value) => setTextOpacity(value[0])} aria-label={`Text opacity: ${textOpacity} percent`} />
@@ -1266,6 +1554,27 @@ export default function SubtitleWeaverPage() {
                       <div style={subtitlePreviewStyle} aria-hidden="true">
                         {renderPreviewSub()}
                       </div>
+                      {randomizePositions && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: `${randomBoundaryLeft}%`,
+                            width: `${randomBoundaryRight - randomBoundaryLeft}%`,
+                            top: `${randomBoundaryTop}%`,
+                            height: `${randomBoundaryBottom - randomBoundaryTop}%`,
+                            border: '2px dashed rgba(59, 130, 246, 0.45)',
+                            backgroundColor: 'rgba(59, 130, 246, 0.03)',
+                            pointerEvents: 'none',
+                            zIndex: 4,
+                            transition: 'all 0.1s ease',
+                          }}
+                          aria-hidden="true"
+                        >
+                          <span className="absolute bottom-1 right-1.5 text-[9px] font-mono px-1 py-0.5 rounded bg-blue-500/70 text-white select-none">
+                            Random Bounds
+                          </span>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <div className="text-center text-muted-foreground p-4" data-ai-hint="video placeholder">
@@ -1285,6 +1594,16 @@ export default function SubtitleWeaverPage() {
               </CardContent>
               <CardFooter className="p-6 border-t bg-card">
                 <div className="w-full space-y-3">
+                  <div className="p-4 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-lg text-sm flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+                    <div>
+                      <h5 className="font-semibold text-amber-500 mb-1 text-xs">Important Tab Visibility Warning</h5>
+                      <p className="text-muted-foreground text-[11px] leading-relaxed">
+                        Do <strong>not</strong> close the tab, switch tabs, or minimize the window while processing/exporting is active. The browser throttles background canvas processing, which will ruin the video recording.
+                      </p>
+                    </div>
+                  </div>
+
                    <Button
                     onClick={handleBurnVideoClientSide}
                     disabled={!canSubmit}
