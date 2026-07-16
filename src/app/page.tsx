@@ -8,112 +8,57 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { UploadCloud, Download, Settings2, Film, Type, ListFilter, AlertCircle, Loader2, Wand2, Droplets, Volume2, Activity, Target } from 'lucide-react';
+import { Input } from "@/components/ui/input";
+import { 
+  UploadCloud, Download, Settings2, Film, Type, ListFilter, 
+  AlertCircle, Loader2, Wand2, Droplets, Volume2, Activity, Target,
+  Sparkles, Palette, RefreshCw, FolderHeart, LayoutGrid, MonitorPlay
+} from 'lucide-react';
 import { FileUploadInput } from '@/components/custom/file-upload-input';
+import { ColorPickerCustom } from '@/components/custom/color-picker-custom';
+import { WordTiming, SubtitleLine, parseSRT, parseJSONLyrics } from '@/lib/subtitle-parser';
+import { getDeterministicLayout, wrapText, wrapWordTimings, findActiveSubtitle } from '@/lib/layout-utils';
 
 const PREVIEW_TEXT = "Aa Bb Gg Yy 0123 Zz. Quick brown fox.";
 const FONT_STYLE_TAG_ID = "custom-font-preview-style";
-const TARGET_VIDEO_WIDTH = 1920;
-const TARGET_VIDEO_HEIGHT = 1080;
-const TARGET_BITRATE = 20000000;
 
-interface WordTiming {
-  id: number;
-  text: string;
-  timestamp: number;
-  duration: number;
+const DEFAULT_VIDEO_WIDTH = 1920;
+const DEFAULT_VIDEO_HEIGHT = 1080;
+const DEFAULT_BITRATE = 20000000;
+
+async function fetchFile(file: File | Blob | string): Promise<Uint8Array> {
+  if (typeof file === 'string') {
+    const response = await fetch(file);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(new Uint8Array(reader.result));
+      } else {
+        resolve(new Uint8Array());
+      }
+    };
+    reader.onerror = () => reject(new Error("File read error"));
+    reader.readAsArrayBuffer(file);
+  });
 }
 
-interface SubtitleLine {
-  id: number;
-  startTime: number;
-  endTime: number;
-  text: string;
-  words?: WordTiming[];
+async function toBlobURL(url: string, mimeType: string): Promise<string> {
+  const response = await fetch(url);
+  const buffer = await response.arrayBuffer();
+  const blob = new Blob([buffer], { type: mimeType });
+  return URL.createObjectURL(blob);
 }
 
 interface Particle {
-  x: number; y: number;
+  x: number;
+  y: number;
   size: number;
   opacity: number;
-  vx: number; vy: number;
-}
-
-
-function parseSRT(srtContent: string): SubtitleLine[] {
-  const entries: SubtitleLine[] = [];
-  const lines = srtContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n\n');
-
-  let idCounter = 0;
-  for (const block of lines) {
-    if (!block.trim()) continue;
-    const blockLines = block.split('\n');
-    if (blockLines.length < 2) continue; // Skip blocks without enough lines (number, time, text)
-
-    // const id = blockLines[0]; // We don't use the ID for now
-    const timeString = blockLines[1];
-    const textLines = blockLines.slice(2).join('\n');
-
-    if (!timeString || !textLines) continue;
-
-
-    const timeParts = timeString.split(' --> ');
-    if (timeParts.length !== 2) continue;
-
-    const parseTime = (timeStr: string): number => {
-      const [hms, msStr] = timeStr.split(',');
-      const [h, m, s] = hms.split(':').map(Number);
-      return h * 3600 + m * 60 + s + Number(msStr) / 1000;
-    };
-
-    try {
-      const startTime = parseTime(timeParts[0]);
-      const endTime = parseTime(timeParts[1]);
-      entries.push({ id: idCounter++, startTime, endTime, text: textLines });
-    } catch (e) {
-      console.error("Error parsing time in SRT block:", timeString, e);
-      // Skip this entry if time parsing fails
-    }
-  }
-  return entries;
-}
-
-function parseJSONLyrics(jsonContent: string): SubtitleLine[] {
-  const parsed = JSON.parse(jsonContent);
-  if (!Array.isArray(parsed)) {
-    throw new Error("JSON must be an array of subtitle lines.");
-  }
-  
-  return parsed.map((item: any, index: number) => {
-    if (!item.words || !Array.isArray(item.words) || item.words.length === 0) {
-      return {
-        id: item.id ?? index,
-        startTime: item.startTime ?? item.timestamp ?? 0,
-        endTime: item.endTime ?? (item.timestamp ? item.timestamp + (item.duration ?? 2) : 2),
-        text: item.text ?? "",
-      };
-    }
-
-    const words: WordTiming[] = item.words.map((w: any, wIndex: number) => ({
-      id: w.id ?? wIndex,
-      text: w.text ?? "",
-      timestamp: Number(w.timestamp),
-      duration: Number(w.duration),
-    })).sort((a: WordTiming, b: WordTiming) => a.timestamp - b.timestamp);
-
-    const startTime = words[0].timestamp;
-    const lastWord = words[words.length - 1];
-    const endTime = lastWord.timestamp + lastWord.duration;
-    const text = words.map(w => w.text).join(' ');
-
-    return {
-      id: item.id ?? index,
-      startTime,
-      endTime,
-      text,
-      words,
-    };
-  });
+  vx: number;
+  vy: number;
 }
 
 function drawWaveformHelper(
@@ -197,148 +142,7 @@ function drawWaveformHelper(
   ctx.restore();
 }
 
-function wrapText(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number
-): string[] {
-  const lines: string[] = [];
-  const paragraphs = text.split('\n');
-  
-  for (const para of paragraphs) {
-    const words = para.split(' ');
-    let currentLine = '';
-
-    for (let n = 0; n < words.length; n++) {
-      const testLine = currentLine ? currentLine + ' ' + words[n] : words[n];
-      const metrics = ctx.measureText(testLine);
-      const testWidth = metrics.width;
-      
-      if (testWidth > maxWidth && n > 0) {
-        lines.push(currentLine);
-        currentLine = words[n];
-      } else {
-        currentLine = testLine;
-      }
-    }
-    if (currentLine) {
-      lines.push(currentLine);
-    }
-  }
-  return lines;
-}
-
-function wrapWordTimings(
-  ctx: CanvasRenderingContext2D,
-  words: WordTiming[],
-  maxWidth: number,
-  textCase: string,
-  fontSize: number
-): WordTiming[][] {
-  const lines: WordTiming[][] = [];
-  let currentLine: WordTiming[] = [];
-  let currentWidth = 0;
-  
-  const spaceWidth = Math.max(ctx.measureText(' ').width, fontSize * 0.25);
-
-  words.forEach((word) => {
-    let t = word.text;
-    if (textCase === 'uppercase') t = t.toUpperCase();
-    else if (textCase === 'lowercase') t = t.toLowerCase();
-
-    const wordWidth = ctx.measureText(t).width;
-    
-    const testWidth = currentLine.length === 0 
-      ? wordWidth 
-      : currentWidth + spaceWidth + wordWidth;
-
-    if (testWidth > maxWidth && currentLine.length > 0) {
-      lines.push(currentLine);
-      currentLine = [word];
-      currentWidth = wordWidth;
-    } else {
-      currentLine.push(word);
-      currentWidth = testWidth;
-    }
-  });
-
-  if (currentLine.length > 0) {
-    lines.push(currentLine);
-  }
-
-  return lines;
-}
-
-function getDeterministicRandom(seedStr: string): (offset: number) => number {
-  let hash = 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    hash = seedStr.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return (offset: number) => {
-    const x = Math.sin(hash + offset) * 10000;
-    return x - Math.floor(x);
-  };
-}
-
-interface TextLayout {
-  x: number;
-  y: number;
-  align: 'left' | 'center' | 'right';
-  baseline: 'top' | 'middle' | 'bottom';
-  transform: string;
-}
-
-function getDeterministicLayout(
-  seedStr: string,
-  left: number = 8,
-  right: number = 92,
-  top: number = 8,
-  bottom: number = 92
-): TextLayout {
-  const rand = getDeterministicRandom(seedStr);
-  const positionIndex = Math.floor(rand(1) * 9); // 0 to 8
-  
-  const midX = (left + right) / 2;
-  const midY = (top + bottom) / 2;
-
-  let x = midX;
-  let y = midY;
-  let align: 'left' | 'center' | 'right' = 'center';
-  let baseline: 'top' | 'middle' | 'bottom' = 'middle';
-  let transform = 'translate(-50%, -50%)';
-
-  switch (positionIndex) {
-    case 0: // Top Left
-      x = left; y = top; align = 'left'; baseline = 'top'; transform = 'translate(0, 0)';
-      break;
-    case 1: // Top Center
-      x = midX; y = top; align = 'center'; baseline = 'top'; transform = 'translate(-50%, 0)';
-      break;
-    case 2: // Top Right
-      x = right; y = top; align = 'right'; baseline = 'top'; transform = 'translate(-100%, 0)';
-      break;
-    case 3: // Mid Left
-      x = left; y = midY; align = 'left'; baseline = 'middle'; transform = 'translate(0, -50%)';
-      break;
-    case 4: // Center
-      x = midX; y = midY; align = 'center'; baseline = 'middle'; transform = 'translate(-50%, -50%)';
-      break;
-    case 5: // Mid Right
-      x = right; y = midY; align = 'right'; baseline = 'middle'; transform = 'translate(-100%, -50%)';
-      break;
-    case 6: // Bottom Left
-      x = left; y = bottom; align = 'left'; baseline = 'bottom'; transform = 'translate(0, -100%)';
-      break;
-    case 7: // Bottom Center
-      x = midX; y = bottom; align = 'center'; baseline = 'bottom'; transform = 'translate(-50%, -100%)';
-      break;
-    case 8: // Bottom Right
-      x = right; y = bottom; align = 'right'; baseline = 'bottom'; transform = 'translate(-100%, -100%)';
-      break;
-  }
-
-  return { x, y, align, baseline, transform };
-}
+// Layout and wrapping utilities are imported from '@/lib/layout-utils'
 
 
 export default function SubtitleWeaverPage() {
@@ -347,11 +151,13 @@ export default function SubtitleWeaverPage() {
   const [subtitleFile, setSubtitleFile] = useState<File | null>(null);
   const [subtitleEntries, setSubtitleEntries] = useState<SubtitleLine[]>([]);
 
+  // Style and rendering options
   const [fontSize, setFontSize] = useState<number>(72);
   const [positionX, setPositionX] = useState<number>(50);
   const [positionY, setPositionY] = useState<number>(90);
   const [subtitleMaxWidth, setSubtitleMaxWidth] = useState<number>(85);
   const [showOutline, setShowOutline] = useState<boolean>(true);
+  const [outlineThickness, setOutlineThickness] = useState<number>(5);
   const [randomizePositions, setRandomizePositions] = useState<boolean>(false);
   const [randomBoundaryLeft, setRandomBoundaryLeft] = useState<number>(10);
   const [randomBoundaryRight, setRandomBoundaryRight] = useState<number>(90);
@@ -363,10 +169,29 @@ export default function SubtitleWeaverPage() {
   const [textColor, setTextColor] = useState<string>('#ffffff');
   const [outlineColor, setOutlineColor] = useState<string>('#000000');
 
+  // Text Shadow / Glow settings
+  const [showShadow, setShowShadow] = useState<boolean>(false);
+  const [shadowColor, setShadowColor] = useState<string>('rgba(0,0,0,0.6)');
+  const [shadowBlur, setShadowBlur] = useState<number>(6);
+  const [shadowOffsetX, setShadowOffsetX] = useState<number>(3);
+  const [shadowOffsetY, setShadowOffsetY] = useState<number>(3);
+
+  // Background options
+  const [showBackground, setShowBackground] = useState<boolean>(false);
+  const [backgroundColor, setBackgroundColor] = useState<string>('#000000');
+  const [backgroundImageFile, setBackgroundImageFile] = useState<File | null>(null);
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState<string | null>(null);
+
+  // Style Alternation (Multi-line styling support)
+  const [alternateLineStyles, setAlternateLineStyles] = useState<string>('none');
+  const [alternateColor, setAlternateColor] = useState<string>('#fbbf24');
+
+  // Highlights and timing styling
   const [highlightColor, setHighlightColor] = useState<string>('#fbbf24');
   const [highlightStyle, setHighlightStyle] = useState<string>('karaoke');
   const [previewTime, setPreviewTime] = useState<number>(0);
 
+  // Audio settings
   const [burnAudio, setBurnAudio] = useState<boolean>(true);
   const [showWaveform, setShowWaveform] = useState<boolean>(false);
   const [waveformStyle, setWaveformStyle] = useState<string>('bars');
@@ -376,7 +201,16 @@ export default function SubtitleWeaverPage() {
   const [waveformWidth, setWaveformWidth] = useState<number>(80);
   const [waveformHeight, setWaveformHeight] = useState<number>(80);
   const [waveformOpacity, setWaveformOpacity] = useState<number>(80);
+
+  // Dynamic Export configurations
+  const [exportFormat, setExportFormat] = useState<string>('webm');
+  const [exportResolution, setExportResolution] = useState<string>('1080p');
+  const [exportBitrate, setExportBitrate] = useState<string>('medium');
+  const [exportFps, setExportFps] = useState<number>(30);
+
   const [processingProgress, setProcessingProgress] = useState<number>(0);
+  const [transcodeProgress, setTranscodeProgress] = useState<number>(0);
+  const [transcodeEta, setTranscodeEta] = useState<string | null>(null);
 
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
@@ -387,6 +221,111 @@ export default function SubtitleWeaverPage() {
 
   const [previewFontFamily, setPreviewFontFamily] = useState<string>("'Inter', sans-serif");
   const [loadedFontName, setLoadedFontName] = useState<string | null>(null);
+
+  const [customPresets, setCustomPresets] = useState<{name: string, config: any}[]>([]);
+
+  // Load FFmpeg UMD scripts from local public directory dynamically to bypass Next.js Turbopack require-statement parsing errors and avoid CORS Worker security issues
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
+    // Load ffmpeg.js
+    if (!(window as any).FFmpegWASM) {
+      const script = document.createElement('script');
+      script.src = '/ffmpeg/ffmpeg.js';
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  // Load settings on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('subtitle-weaver-settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.fontSize !== undefined) setFontSize(parsed.fontSize);
+        if (parsed.positionX !== undefined) setPositionX(parsed.positionX);
+        if (parsed.positionY !== undefined) setPositionY(parsed.positionY);
+        if (parsed.subtitleMaxWidth !== undefined) setSubtitleMaxWidth(parsed.subtitleMaxWidth);
+        if (parsed.showOutline !== undefined) setShowOutline(parsed.showOutline);
+        if (parsed.outlineThickness !== undefined) setOutlineThickness(parsed.outlineThickness);
+        if (parsed.randomizePositions !== undefined) setRandomizePositions(parsed.randomizePositions);
+        if (parsed.randomBoundaryLeft !== undefined) setRandomBoundaryLeft(parsed.randomBoundaryLeft);
+        if (parsed.randomBoundaryRight !== undefined) setRandomBoundaryRight(parsed.randomBoundaryRight);
+        if (parsed.randomBoundaryTop !== undefined) setRandomBoundaryTop(parsed.randomBoundaryTop);
+        if (parsed.randomBoundaryBottom !== undefined) setRandomBoundaryBottom(parsed.randomBoundaryBottom);
+        if (parsed.textCase !== undefined) setTextCase(parsed.textCase);
+        if (parsed.textOpacity !== undefined) setTextOpacity(parsed.textOpacity);
+        if (parsed.textEffect !== undefined) setTextEffect(parsed.textEffect);
+        if (parsed.textColor !== undefined) setTextColor(parsed.textColor);
+        if (parsed.outlineColor !== undefined) setOutlineColor(parsed.outlineColor);
+        
+        if (parsed.showShadow !== undefined) setShowShadow(parsed.showShadow);
+        if (parsed.shadowColor !== undefined) setShadowColor(parsed.shadowColor);
+        if (parsed.shadowBlur !== undefined) setShadowBlur(parsed.shadowBlur);
+        if (parsed.shadowOffsetX !== undefined) setShadowOffsetX(parsed.shadowOffsetX);
+        if (parsed.shadowOffsetY !== undefined) setShadowOffsetY(parsed.shadowOffsetY);
+
+        if (parsed.showBackground !== undefined) setShowBackground(parsed.showBackground);
+        if (parsed.backgroundColor !== undefined) setBackgroundColor(parsed.backgroundColor);
+        
+        if (parsed.alternateLineStyles !== undefined) setAlternateLineStyles(parsed.alternateLineStyles);
+        if (parsed.alternateColor !== undefined) setAlternateColor(parsed.alternateColor);
+        
+        if (parsed.highlightColor !== undefined) setHighlightColor(parsed.highlightColor);
+        if (parsed.highlightStyle !== undefined) setHighlightStyle(parsed.highlightStyle);
+        if (parsed.burnAudio !== undefined) setBurnAudio(parsed.burnAudio);
+        if (parsed.showWaveform !== undefined) setShowWaveform(parsed.showWaveform);
+        if (parsed.waveformStyle !== undefined) setWaveformStyle(parsed.waveformStyle);
+        if (parsed.waveformColor !== undefined) setWaveformColor(parsed.waveformColor);
+        if (parsed.waveformPositionX !== undefined) setWaveformPositionX(parsed.waveformPositionX);
+        if (parsed.waveformPositionY !== undefined) setWaveformPositionY(parsed.waveformPositionY);
+        if (parsed.waveformWidth !== undefined) setWaveformWidth(parsed.waveformWidth);
+        if (parsed.waveformHeight !== undefined) setWaveformHeight(parsed.waveformHeight);
+        if (parsed.waveformOpacity !== undefined) setWaveformOpacity(parsed.waveformOpacity);
+        
+        if (parsed.exportFormat !== undefined) setExportFormat(parsed.exportFormat);
+        if (parsed.exportResolution !== undefined) setExportResolution(parsed.exportResolution);
+        if (parsed.exportBitrate !== undefined) setExportBitrate(parsed.exportBitrate);
+        if (parsed.exportFps !== undefined) setExportFps(parsed.exportFps);
+      }
+    } catch (e) {
+      console.error("Error loading settings from localStorage:", e);
+    }
+
+    try {
+      const savedPresets = localStorage.getItem('subtitle-weaver-presets');
+      if (savedPresets) {
+        setCustomPresets(JSON.parse(savedPresets));
+      }
+    } catch (e) {
+      console.error("Error loading presets from localStorage:", e);
+    }
+  }, []);
+
+  // Save settings when they change
+  useEffect(() => {
+    const config = {
+      fontSize, positionX, positionY, subtitleMaxWidth, showOutline, outlineThickness,
+      randomizePositions, randomBoundaryLeft, randomBoundaryRight, randomBoundaryTop, randomBoundaryBottom,
+      textCase, textOpacity, textEffect, textColor, outlineColor,
+      showShadow, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY,
+      showBackground, backgroundColor, alternateLineStyles, alternateColor,
+      highlightColor, highlightStyle, burnAudio, showWaveform, waveformStyle,
+      waveformColor, waveformPositionX, waveformPositionY, waveformWidth, waveformHeight, waveformOpacity,
+      exportFormat, exportResolution, exportBitrate, exportFps
+    };
+    localStorage.setItem('subtitle-weaver-settings', JSON.stringify(config));
+  }, [
+    fontSize, positionX, positionY, subtitleMaxWidth, showOutline, outlineThickness,
+    randomizePositions, randomBoundaryLeft, randomBoundaryRight, randomBoundaryTop, randomBoundaryBottom,
+    textCase, textOpacity, textEffect, textColor, outlineColor,
+    showShadow, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY,
+    showBackground, backgroundColor, alternateLineStyles, alternateColor,
+    highlightColor, highlightStyle, burnAudio, showWaveform, waveformStyle,
+    waveformColor, waveformPositionX, waveformPositionY, waveformWidth, waveformHeight, waveformOpacity,
+    exportFormat, exportResolution, exportBitrate, exportFps
+  ]);
 
   const { toast } = useToast();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -399,6 +338,7 @@ export default function SubtitleWeaverPage() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const previewAnimationRef = useRef<number | null>(null);
+  const transcodeStartTimeRef = useRef<number | null>(null);
 
   const initPreviewAnalyser = () => {
     if (!videoRef.current || analyserRef.current) return;
@@ -569,6 +509,20 @@ export default function SubtitleWeaverPage() {
   }, [fontFile]);
 
   useEffect(() => {
+    let url: string | null = null;
+    if (backgroundImageFile) {
+      url = URL.createObjectURL(backgroundImageFile);
+      setBackgroundImageUrl(url);
+    } else {
+      setBackgroundImageUrl(null);
+    }
+    
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [backgroundImageFile]);
+
+  useEffect(() => {
     if (subtitleFile) {
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -687,6 +641,9 @@ export default function SubtitleWeaverPage() {
     setProcessedVideoUrl(null);
     setProcessedVideoFilename(null);
     setProcessingProgress(0);
+    setTranscodeProgress(0);
+    setTranscodeEta(null);
+    transcodeStartTimeRef.current = null;
     lastSubRef.current = null;
     particlesRef.current = [];
 
@@ -696,11 +653,45 @@ export default function SubtitleWeaverPage() {
     // Keep muted false so audio flows into AudioContext, which will stay silent to user
     videoElement.muted = false; 
 
-    const canvas = canvasRef.current || document.createElement('canvas');
-    if (!canvasRef.current) {
+    // Dynamic resolution
+    let targetWidth = 1920;
+    let targetHeight = 1080;
+    if (exportResolution === '720p') {
+      targetWidth = 1280;
+      targetHeight = 720;
+    } else if (exportResolution === '1440p') {
+      targetWidth = 2560;
+      targetHeight = 1440;
     }
-    canvas.width = TARGET_VIDEO_WIDTH;
-    canvas.height = TARGET_VIDEO_HEIGHT;
+
+    // Dynamic bitrate
+    let targetBitrate = 20000000;
+    if (exportBitrate === 'low') {
+      targetBitrate = 10000000;
+    } else if (exportBitrate === 'high') {
+      targetBitrate = 40000000;
+    } else if (exportBitrate === 'ultra') {
+      targetBitrate = 80000000;
+    }
+
+    // Preload background image if enabled
+    let backgroundImg: HTMLImageElement | null = null;
+    if (showBackground && backgroundImageUrl) {
+      backgroundImg = new Image();
+      backgroundImg.src = backgroundImageUrl;
+      await new Promise((resolve) => {
+        if (backgroundImg) {
+          backgroundImg.onload = resolve;
+          backgroundImg.onerror = resolve;
+        } else {
+          resolve(null);
+        }
+      });
+    }
+
+    const canvas = canvasRef.current || document.createElement('canvas');
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
     const ctx = canvas.getContext('2d');
 
     if (!ctx) {
@@ -737,7 +728,7 @@ export default function SubtitleWeaverPage() {
     let recorder: MediaRecorder;
 
     try {
-      const canvasStream = canvas.captureStream(30);
+      const canvasStream = canvas.captureStream(exportFps);
       let combinedStream = canvasStream;
 
       if (burnAudio && burnerDest) {
@@ -750,9 +741,24 @@ export default function SubtitleWeaverPage() {
         }
       }
 
+      let selectedMimeType = 'video/webm';
+      const mimeTypesToTry = [
+        'video/webm;codecs=h264',
+        'video/webm;codecs=vp8',
+        'video/webm;codecs=vp9',
+      ];
+      for (const mime of mimeTypesToTry) {
+        if (MediaRecorder.isTypeSupported(mime)) {
+          selectedMimeType = mime;
+          break;
+        }
+      }
+      console.log("Selected recording MIME type:", selectedMimeType);
+
       recorder = new MediaRecorder(combinedStream, {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: TARGET_BITRATE,
+        mimeType: selectedMimeType,
+        videoBitsPerSecond: targetBitrate,
+        audioBitsPerSecond: 320000,
       });
 
       recorder.ondataavailable = (event) => {
@@ -761,14 +767,96 @@ export default function SubtitleWeaverPage() {
         }
       };
 
-      recorder.onstop = () => {
-        const blob = new Blob(mediaChunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        setProcessedVideoUrl(url);
-        setProcessedVideoFilename(`subtitled_${videoFile.name.split('.')[0] || 'video'}.webm`);
+      recorder.onstop = async () => {
+        const webmBlob = new Blob(mediaChunks, { type: 'video/webm' });
+        
+        if (exportFormat === 'mp4') {
+          setProcessingProgress(98);
+          transcodeStartTimeRef.current = Date.now();
+          setTranscodeEta("Calculating ETA...");
+          toast({ title: "Converting to MP4...", description: "Please wait, transcoding video in-browser." });
+          try {
+            const globalWasm = (window as any).FFmpegWASM;
+            
+            if (!globalWasm) {
+              throw new Error("FFmpeg libraries are still loading. Please wait a few seconds and try again.");
+            }
+            
+            const { FFmpeg } = globalWasm;
+            
+            const ffmpeg = new FFmpeg();
+            
+            ffmpeg.on('log', ({ message }: { message: string }) => {
+              console.log("FFmpeg Log:", message);
+            });
+            
+            ffmpeg.on('progress', ({ progress }: { progress: number }) => {
+              const percent = Math.round(progress * 100);
+              console.log(`FFmpeg Conversion Progress: ${percent}%`);
+              setTranscodeProgress(percent);
+              setProcessingProgress(Math.floor(95 + progress * 5));
+              
+              const startTime = transcodeStartTimeRef.current;
+              if (startTime && percent > 2) {
+                const elapsedMs = Date.now() - startTime;
+                const totalEstimatedMs = elapsedMs / progress;
+                const remainingMs = totalEstimatedMs - elapsedMs;
+                const remainingSec = Math.max(0, Math.round(remainingMs / 1000));
+                
+                if (remainingSec < 60) {
+                  setTranscodeEta(`About ${remainingSec}s remaining`);
+                } else {
+                  const mins = Math.floor(remainingSec / 60);
+                  const secs = remainingSec % 60;
+                  setTranscodeEta(`About ${mins}m ${secs}s remaining`);
+                }
+              }
+            });
+
+            const origin = window.location.origin;
+            await ffmpeg.load({
+              coreURL: `${origin}/ffmpeg/ffmpeg-core.js`,
+              wasmURL: `${origin}/ffmpeg/ffmpeg-core.wasm`,
+            });
+            
+            await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+            
+            await ffmpeg.exec([
+              '-i', 'input.webm',
+              '-c:v', 'libx264',
+              '-preset', 'ultrafast',
+              '-c:a', 'aac',
+              '-b:a', '320k',
+              'output.mp4'
+            ]);
+            
+            const data = await ffmpeg.readFile('output.mp4');
+            const mp4Blob = new Blob([data as any], { type: 'video/mp4' });
+            const url = URL.createObjectURL(mp4Blob);
+            
+            setProcessedVideoUrl(url);
+            setProcessedVideoFilename(`subtitled_${videoFile.name.split('.')[0] || 'video'}.mp4`);
+            toast({ title: "Processing Complete!", description: "Your MP4 video is ready for download." });
+          } catch (e: any) {
+            console.error("FFmpeg transcode error:", e);
+            toast({ 
+              title: "MP4 Conversion Failed", 
+              description: `FFmpeg failed: ${e.message || e}. Downloading WebM fallback.`, 
+              variant: "destructive" 
+            });
+            const url = URL.createObjectURL(webmBlob);
+            setProcessedVideoUrl(url);
+            setProcessedVideoFilename(`subtitled_${videoFile.name.split('.')[0] || 'video'}.webm`);
+          }
+        } else {
+          const url = URL.createObjectURL(webmBlob);
+          setProcessedVideoUrl(url);
+          setProcessedVideoFilename(`subtitled_${videoFile.name.split('.')[0] || 'video'}.webm`);
+          toast({ title: "Processing Complete!", description: "Your WebM video is ready for download." });
+        }
+        
         setIsProcessing(false);
         setProcessingProgress(100);
-        toast({ title: "Processing Complete!", description: "Your video is ready for download." });
         URL.revokeObjectURL(videoBlobUrl);
         
         if (burnerAudioCtx) {
@@ -803,11 +891,25 @@ export default function SubtitleWeaverPage() {
         recorder.start();
         videoElement.play();
 
-        function renderFrame() {
+        let lastFrameTime = 0;
+        const frameInterval = 1000 / exportFps;
+
+        function renderFrame(timestamp?: number) {
+          if (!timestamp) {
+            requestAnimationFrame(renderFrame);
+            return;
+          }
           if (videoElement.paused || videoElement.ended || recorder.state === "inactive") {
             if (recorder.state === "recording") recorder.stop();
             return;
           }
+
+          const elapsed = timestamp - lastFrameTime;
+          if (elapsed < frameInterval) {
+            requestAnimationFrame(renderFrame);
+            return;
+          }
+          lastFrameTime = timestamp - (elapsed % frameInterval);
           
           const currentTime = videoElement.currentTime;
           const duration = videoElement.duration;
@@ -816,7 +918,7 @@ export default function SubtitleWeaverPage() {
             setProcessingProgress(progress);
           }
 
-          const activeSub = subtitleEntries.find(s => currentTime >= s.startTime && currentTime <= s.endTime);
+          const activeSub = findActiveSubtitle(subtitleEntries, currentTime);
           const currentSubText = activeSub ? activeSub.text : null;
           if (currentSubText !== lastSubRef.current) {
               particlesRef.current = [];
@@ -825,11 +927,20 @@ export default function SubtitleWeaverPage() {
 
           // Draw background first
           if (ctx) {
-            ctx.fillStyle = "black";
-            ctx.fillRect(0,0, canvas.width, canvas.height);
+            if (showBackground) {
+              if (backgroundImg && backgroundImg.complete) {
+                ctx.drawImage(backgroundImg, 0, 0, canvas.width, canvas.height);
+              } else {
+                ctx.fillStyle = backgroundColor;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+              }
+            } else {
+              ctx.fillStyle = "black";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
           }
 
-          // Scale video to fit 1080p canvas while maintaining aspect ratio
+          // Scale video to fit canvas while maintaining aspect ratio
           const videoAspectRatio = videoElement.videoWidth / videoElement.videoHeight;
           let drawWidth = canvas.width;
           let drawHeight = canvas.width / videoAspectRatio;
@@ -900,13 +1011,33 @@ export default function SubtitleWeaverPage() {
                 baselineSetting = layout.baseline;
               }
 
+              // Upgraded: Scale Pop animation hook
+              let hasScalePop = false;
+              if (textEffect === 'scalePop') {
+                const timeInSub = currentTime - activeSub.startTime;
+                if (timeInSub < 0.25) {
+                  hasScalePop = true;
+                  const scale = 1 + 0.12 * Math.sin((timeInSub / 0.25) * Math.PI);
+                  ctx.save();
+                  ctx.translate(textX, textY);
+                  ctx.scale(scale, scale);
+                  ctx.translate(-textX, -textY);
+                }
+              }
+
+              // Upgraded: Text Shadow / Glow
+              if (showShadow) {
+                ctx.shadowColor = shadowColor;
+                ctx.shadowBlur = shadowBlur;
+                ctx.shadowOffsetX = shadowOffsetX;
+                ctx.shadowOffsetY = shadowOffsetY;
+              }
+
               const fontSetting = `${fontSize}px "${loadedFontName || 'Inter'}", sans-serif`;
               const maxW = canvas.width * (subtitleMaxWidth / 100);
 
               if (activeSub.words && activeSub.words.length > 0) {
                 // Word-by-word drawing with wrapping
-                // Use textAlign='left' because we manually compute each word's X position.
-                // The alignSetting is applied in the manual currentX calculation below.
                 ctx.font = fontSetting;
                 ctx.textAlign = 'left';
                 ctx.textBaseline = baselineSetting;
@@ -948,7 +1079,12 @@ export default function SubtitleWeaverPage() {
                     const isActive = currentTime >= word.timestamp && currentTime <= word.timestamp + word.duration;
                     const isPast = currentTime > word.timestamp + word.duration;
 
+                    // Upgraded: Multi-line alternating line colors
                     let color = textColor;
+                    if (alternateLineStyles === 'alternate-color' && lineIndex % 2 === 1) {
+                      color = alternateColor;
+                    }
+
                     let opacity = 1;
 
                     if (highlightStyle === 'karaoke') {
@@ -967,6 +1103,11 @@ export default function SubtitleWeaverPage() {
                       }
                     }
 
+                    // Upgraded: Typewriter effect word hiding
+                    if (textEffect === 'typewriter' && isFuture) {
+                      opacity = 0;
+                    }
+
                     if (opacity > 0) {
                       ctx.fillStyle = color;
                       const originalGlobalAlpha = ctx.globalAlpha;
@@ -974,7 +1115,7 @@ export default function SubtitleWeaverPage() {
 
                       if (showOutline) {
                         ctx.strokeStyle = outlineColor;
-                        ctx.lineWidth = Math.max(1, fontSize / 15);
+                        ctx.lineWidth = outlineThickness;
                         ctx.strokeText(word.text, currentX, currentLineY);
                       }
                       ctx.fillText(word.text, currentX, currentLineY);
@@ -1002,11 +1143,18 @@ export default function SubtitleWeaverPage() {
                 ctx.font = fontSetting;
                 ctx.textAlign = alignSetting;
                 ctx.textBaseline = baselineSetting;
-                ctx.fillStyle = textColor;
                 
                 let subText = activeSub.text;
                 if (textCase === 'uppercase') subText = subText.toUpperCase();
                 else if (textCase === 'lowercase') subText = subText.toLowerCase();
+
+                // Upgraded: Typewriter reveal effect for SRT lines
+                if (textEffect === 'typewriter') {
+                  const subDuration = activeSub.endTime - activeSub.startTime;
+                  const percent = Math.min(1, (currentTime - activeSub.startTime) / (subDuration * 0.85 || 1));
+                  const charsToShow = Math.floor(subText.length * percent);
+                  subText = subText.substring(0, charsToShow);
+                }
 
                 const wrappedLines = wrapText(ctx, subText, maxW);
                 const lineGap = fontSize * 1.2;
@@ -1021,9 +1169,16 @@ export default function SubtitleWeaverPage() {
                 wrappedLines.forEach((line, lineIndex) => {
                   const currentLineY = startY + lineIndex * lineGap;
 
+                  // Upgraded: Multi-line alternating coloring
+                  let currentTextColor = textColor;
+                  if (alternateLineStyles === 'alternate-color' && lineIndex % 2 === 1) {
+                    currentTextColor = alternateColor;
+                  }
+                  ctx.fillStyle = currentTextColor;
+
                   if (showOutline) {
                      ctx.strokeStyle = outlineColor;
-                     ctx.lineWidth = Math.max(1, fontSize / 15);
+                     ctx.lineWidth = outlineThickness;
                      ctx.strokeText(line, textX, currentLineY);
                   }
                   ctx.fillText(line, textX, currentLineY);
@@ -1045,21 +1200,38 @@ export default function SubtitleWeaverPage() {
                 });
               }
 
+              // Upgraded: Reset shadow and pop properties
+              if (showShadow) {
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
+                ctx.shadowOffsetX = 0;
+                ctx.shadowOffsetY = 0;
+              }
+
+              if (hasScalePop) {
+                ctx.restore();
+              }
+
               ctx.textBaseline = 'alphabetic';
               ctx.globalAlpha = 1; // Reset alpha for other elements
             }
           }
 
-           // Update and draw all particles for smoke effect
+          // Upgraded: Safe particle rendering loop (avoid loop splice bugs)
           if (particlesRef.current.length > 0 && ctx) {
-              ctx.fillStyle = `rgba(220, 220, 220, 1)`; // Smoke color
-              particlesRef.current.forEach((p, index) => {
-                  p.x += p.vx; p.y += p.vy; p.opacity -= 0.008; p.size *= 0.98;
+              particlesRef.current = particlesRef.current.filter((p) => {
+                  p.x += p.vx;
+                  p.y += p.vy;
+                  p.opacity -= 0.008;
+                  p.size *= 0.98;
                   if (p.opacity <= 0 || p.size <= 0.5) {
-                      particlesRef.current.splice(index, 1);
-                  } else {
-                      ctx.globalAlpha = p.opacity; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+                      return false;
                   }
+                  ctx.globalAlpha = p.opacity;
+                  ctx.beginPath();
+                  ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                  ctx.fill();
+                  return true;
               });
               ctx.globalAlpha = 1; // IMPORTANT: Reset alpha after drawing all particles
           }
@@ -1082,12 +1254,83 @@ export default function SubtitleWeaverPage() {
         }
     };
   };
-  
+
+  const savePreset = (name: string) => {
+    if (!name.trim()) return;
+    const newPreset = {
+      name,
+      config: {
+        fontSize, positionX, positionY, subtitleMaxWidth, showOutline, outlineThickness,
+        randomizePositions, randomBoundaryLeft, randomBoundaryRight, randomBoundaryTop, randomBoundaryBottom,
+        textCase, textOpacity, textEffect, textColor, outlineColor,
+        showShadow, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY,
+        showBackground, backgroundColor, alternateLineStyles, alternateColor,
+        highlightColor, highlightStyle, burnAudio, showWaveform, waveformStyle,
+        waveformColor, waveformPositionX, waveformPositionY, waveformWidth, waveformHeight, waveformOpacity
+      }
+    };
+    const updated = [...customPresets.filter(p => p.name !== name), newPreset];
+    setCustomPresets(updated);
+    localStorage.setItem('subtitle-weaver-presets', JSON.stringify(updated));
+    toast({ title: "Template Saved", description: `"${name}" style template is saved.` });
+  };
+
+  const loadPreset = (preset: any) => {
+    const config = preset.config;
+    if (config.fontSize !== undefined) setFontSize(config.fontSize);
+    if (config.positionX !== undefined) setPositionX(config.positionX);
+    if (config.positionY !== undefined) setPositionY(config.positionY);
+    if (config.subtitleMaxWidth !== undefined) setSubtitleMaxWidth(config.subtitleMaxWidth);
+    if (config.showOutline !== undefined) setShowOutline(config.showOutline);
+    if (config.outlineThickness !== undefined) setOutlineThickness(config.outlineThickness);
+    if (config.randomizePositions !== undefined) setRandomizePositions(config.randomizePositions);
+    if (config.randomBoundaryLeft !== undefined) setRandomBoundaryLeft(config.randomBoundaryLeft);
+    if (config.randomBoundaryRight !== undefined) setRandomBoundaryRight(config.randomBoundaryRight);
+    if (config.randomBoundaryTop !== undefined) setRandomBoundaryTop(config.randomBoundaryTop);
+    if (config.randomBoundaryBottom !== undefined) setRandomBoundaryBottom(config.randomBoundaryBottom);
+    if (config.textCase !== undefined) setTextCase(config.textCase);
+    if (config.textOpacity !== undefined) setTextOpacity(config.textOpacity);
+    if (config.textEffect !== undefined) setTextEffect(config.textEffect);
+    if (config.textColor !== undefined) setTextColor(config.textColor);
+    if (config.outlineColor !== undefined) setOutlineColor(config.outlineColor);
+    
+    if (config.showShadow !== undefined) setShowShadow(config.showShadow);
+    if (config.shadowColor !== undefined) setShadowColor(config.shadowColor);
+    if (config.shadowBlur !== undefined) setShadowBlur(config.shadowBlur);
+    if (config.shadowOffsetX !== undefined) setShadowOffsetX(config.shadowOffsetX);
+    if (config.shadowOffsetY !== undefined) setShadowOffsetY(config.shadowOffsetY);
+
+    if (config.showBackground !== undefined) setShowBackground(config.showBackground);
+    if (config.backgroundColor !== undefined) setBackgroundColor(config.backgroundColor);
+    
+    if (config.alternateLineStyles !== undefined) setAlternateLineStyles(config.alternateLineStyles);
+    if (config.alternateColor !== undefined) setAlternateColor(config.alternateColor);
+    
+    if (config.highlightColor !== undefined) setHighlightColor(config.highlightColor);
+    if (config.highlightStyle !== undefined) setHighlightStyle(config.highlightStyle);
+    if (config.burnAudio !== undefined) setBurnAudio(config.burnAudio);
+    if (config.showWaveform !== undefined) setShowWaveform(config.showWaveform);
+    if (config.waveformStyle !== undefined) setWaveformStyle(config.waveformStyle);
+    if (config.waveformColor !== undefined) setWaveformColor(config.waveformColor);
+    if (config.waveformPositionX !== undefined) setWaveformPositionX(config.waveformPositionX);
+    if (config.waveformPositionY !== undefined) setWaveformPositionY(config.waveformPositionY);
+    if (config.waveformWidth !== undefined) setWaveformWidth(config.waveformWidth);
+    if (config.waveformHeight !== undefined) setWaveformHeight(config.waveformHeight);
+    if (config.waveformOpacity !== undefined) setWaveformOpacity(config.waveformOpacity);
+
+    toast({ title: "Template Loaded", description: `"${preset.name}" styles applied successfully.` });
+  };
+
+  const deletePreset = (name: string) => {
+    const updated = customPresets.filter(p => p.name !== name);
+    setCustomPresets(updated);
+    localStorage.setItem('subtitle-weaver-presets', JSON.stringify(updated));
+    toast({ title: "Template Deleted", description: `"${name}" template deleted.` });
+  };
+
   const canSubmit = !!videoFile && !!subtitleFile && !isProcessing;
 
-  const activePreviewSub = subtitleEntries.find(
-    s => previewTime >= s.startTime && previewTime <= s.endTime
-  );
+  const activePreviewSub = findActiveSubtitle(subtitleEntries, previewTime);
 
   let displayedPreviewSub = activePreviewSub;
   if (!displayedPreviewSub && subtitleEntries.length > 0 && previewTime === 0) {
@@ -1107,16 +1350,24 @@ export default function SubtitleWeaverPage() {
 
   const layoutCoords = getSubLayout();
 
+  // Dynamic preview scaling factor (ratio of preview height vs target 1080p height)
+  const previewHeightRatio = (videoRef.current?.clientHeight || 450) / 1080;
+  const previewStrokeWidth = (outlineThickness * previewHeightRatio);
+
   const subtitlePreviewStyle: React.CSSProperties = {
     position: 'absolute',
     left: layoutCoords ? `${layoutCoords.x}%` : `${positionX}%`,
     top: layoutCoords ? `${layoutCoords.y}%` : `${positionY}%`,
     opacity: textOpacity / 100,
     transform: layoutCoords ? layoutCoords.transform : 'translate(-50%, -50%)',
-    fontSize: `${fontSize / (TARGET_VIDEO_HEIGHT / (videoRef.current?.clientHeight || TARGET_VIDEO_HEIGHT))}px`, // Scale font size for preview
+    fontSize: `${fontSize * previewHeightRatio}px`,
     fontFamily: previewFontFamily,
     color: textColor,
-    textShadow: showOutline ? `-1px -1px 0 ${outlineColor}, 1px -1px 0 ${outlineColor}, -1px 1px 0 ${outlineColor}, 1px 1px 0 ${outlineColor}, 0px 0px ${fontSize/20}px ${outlineColor}` : 'none',
+    WebkitTextStroke: showOutline ? `${previewStrokeWidth}px ${outlineColor}` : 'none',
+    paintOrder: 'stroke fill',
+    textShadow: showShadow
+      ? `${shadowOffsetX * previewHeightRatio}px ${shadowOffsetY * previewHeightRatio}px ${shadowBlur * previewHeightRatio}px ${shadowColor}`
+      : 'none',
     textAlign: layoutCoords ? layoutCoords.align : 'center',
     width: `${subtitleMaxWidth}%`,
     maxWidth: 'none',
@@ -1132,65 +1383,122 @@ export default function SubtitleWeaverPage() {
       return previewTime === 0 ? PREVIEW_TEXT : "";
     }
     
+    // Static text or SRT subtitles preview rendering
     if (!displayedPreviewSub.words || displayedPreviewSub.words.length === 0) {
       let subText = displayedPreviewSub.text;
       if (textCase === 'uppercase') subText = subText.toUpperCase();
       else if (textCase === 'lowercase') subText = subText.toLowerCase();
-      return <span style={{ color: textColor }}>{subText}</span>;
+
+      // Typewriter reveal in preview
+      if (textEffect === 'typewriter' && activePreviewSub) {
+        const subDuration = activePreviewSub.endTime - activePreviewSub.startTime;
+        const percent = Math.min(1, (previewTime - activePreviewSub.startTime) / (subDuration * 0.85 || 1));
+        const charsToShow = Math.floor(subText.length * percent);
+        subText = subText.substring(0, charsToShow);
+      }
+
+      const previewLines = subText.split('\n');
+      return (
+        <span className="flex flex-col items-center w-full">
+          {previewLines.map((line, lineIndex) => {
+            let color = textColor;
+            if (alternateLineStyles === 'alternate-color' && lineIndex % 2 === 1) {
+              color = alternateColor;
+            }
+            return (
+              <span key={lineIndex} style={{ color }} className="block">
+                {line}
+              </span>
+            );
+          })}
+        </span>
+      );
     }
 
+    // Word-by-word timing JSON subtitles preview rendering
     const justifyClass = layoutCoords
       ? layoutCoords.align === 'left' 
-        ? 'justify-start' 
+        ? 'items-start text-left' 
         : layoutCoords.align === 'right' 
-          ? 'justify-end' 
-          : 'justify-center'
-      : 'justify-center';
+          ? 'items-end text-right' 
+          : 'items-center text-center'
+      : 'items-center text-center';
+
+    const canvas = canvasRef.current;
+    const canvasCtx = canvas?.getContext('2d');
+    let wrappedPreviewLines: WordTiming[][] = [displayedPreviewSub.words];
+    
+    if (canvasCtx) {
+      canvasCtx.font = `${fontSize}px "${loadedFontName || 'Inter'}", sans-serif`;
+      const canvasMaxW = 1920 * (subtitleMaxWidth / 100);
+      wrappedPreviewLines = wrapWordTimings(canvasCtx, displayedPreviewSub.words, canvasMaxW, textCase, fontSize);
+    }
 
     return (
-      <span className={`inline-flex flex-wrap ${justifyClass} gap-x-[0.25em] w-full`}>
-        {displayedPreviewSub.words.map((word, index) => {
-          const isFuture = previewTime < word.timestamp;
-          const isActive = previewTime >= word.timestamp && previewTime <= word.timestamp + word.duration;
-          const isPast = previewTime > word.timestamp + word.duration;
-
-          let color = textColor;
-          let opacity = 1;
-
-          if (highlightStyle === 'karaoke') {
-            if (isActive || isPast) {
-              color = highlightColor;
-            }
-          } else if (highlightStyle === 'single') {
-            if (isActive) {
-              color = highlightColor;
-            }
-          } else if (highlightStyle === 'progressive') {
-            if (isFuture) {
-              opacity = 0;
-            } else if (isActive) {
-              color = highlightColor;
-            }
+      <div className={`flex flex-col ${justifyClass} w-full`}>
+        {wrappedPreviewLines.map((lineWords, lineIndex) => {
+          let lineAlignClass = 'justify-center';
+          if (layoutCoords) {
+            if (layoutCoords.align === 'left') lineAlignClass = 'justify-start';
+            else if (layoutCoords.align === 'right') lineAlignClass = 'justify-end';
           }
-
-          let text = word.text;
-          if (textCase === 'uppercase') text = text.toUpperCase();
-          else if (textCase === 'lowercase') text = text.toLowerCase();
-
+          
           return (
-            <span
-              key={index}
-              style={{
-                color,
-                opacity,
-                transition: highlightStyle === 'progressive' ? 'none' : 'color 0.15s ease, opacity 0.15s ease',
-              }}
-            >
-              {text}
-            </span>
+            <div key={lineIndex} className={`flex flex-wrap ${lineAlignClass} gap-x-[0.25em] w-full`}>
+              {lineWords.map((word, index) => {
+                const isFuture = previewTime < word.timestamp;
+                const isActive = previewTime >= word.timestamp && previewTime <= word.timestamp + word.duration;
+                const isPast = previewTime > word.timestamp + word.duration;
+
+                // Alternate line colors
+                let color = textColor;
+                if (alternateLineStyles === 'alternate-color' && lineIndex % 2 === 1) {
+                  color = alternateColor;
+                }
+                let opacity = 1;
+
+                if (highlightStyle === 'karaoke') {
+                  if (isActive || isPast) {
+                    color = highlightColor;
+                  }
+                } else if (highlightStyle === 'single') {
+                  if (isActive) {
+                    color = highlightColor;
+                  }
+                } else if (highlightStyle === 'progressive') {
+                  if (isFuture) {
+                    opacity = 0;
+                  } else if (isActive) {
+                    color = highlightColor;
+                  }
+                }
+
+                // Typewriter effect word hiding
+                if (textEffect === 'typewriter' && isFuture) {
+                  opacity = 0;
+                }
+
+                let text = word.text;
+                if (textCase === 'uppercase') text = text.toUpperCase();
+                else if (textCase === 'lowercase') text = text.toLowerCase();
+
+                return (
+                  <span
+                    key={index}
+                    style={{
+                      color,
+                      opacity,
+                      transition: highlightStyle === 'progressive' ? 'none' : 'color 0.15s ease, opacity 0.15s ease',
+                    }}
+                  >
+                    {text}
+                  </span>
+                );
+              })}
+            </div>
           );
         })}
-      </span>
+      </div>
     );
   };
 
@@ -1218,7 +1526,7 @@ export default function SubtitleWeaverPage() {
               </CardHeader>
               <CardContent className="space-y-4 p-6">
                 <FileUploadInput id="video-upload" label="Video File" accept="video/*" icon={<Film size={18} />} onFileChange={setVideoFile} fileName={videoFile?.name} />
-                <FileUploadInput id="font-upload" label="Font File (.ttf)" accept=".ttf" icon={<Type size={18} />} onFileChange={setFontFile} fileName={fontFile?.name}/>
+                <FileUploadInput id="font-upload" label="Font File (.ttf, .otf, .woff)" accept=".ttf,.otf,.woff,.woff2" icon={<Type size={18} />} onFileChange={setFontFile} fileName={fontFile?.name}/>
                 <FileUploadInput id="srt-upload" label="Subtitle / Lyrics File (.srt, .json)" accept=".srt,.json" icon={<ListFilter size={18} />} onFileChange={setSubtitleFile} fileName={subtitleFile?.name}/>
               </CardContent>
             </Card>
@@ -1245,11 +1553,98 @@ export default function SubtitleWeaverPage() {
                   <Label htmlFor="subtitle-max-width" className="flex justify-between"><span>Subtitle Max Width:</span> <span>{subtitleMaxWidth}%</span></Label>
                   <Slider id="subtitle-max-width" name="subtitleMaxWidth" min={30} max={100} step={1} value={[subtitleMaxWidth]} onValueChange={(value) => setSubtitleMaxWidth(value[0])} aria-label={`Subtitle maximum width: ${subtitleMaxWidth} percent of video width`} />
                 </div>
-                <div className="flex items-center justify-between space-x-2 pt-2">
-                  <Label htmlFor="show-outline" className="text-sm">Show Subtitle Outline</Label>
-                  <Switch id="show-outline" name="showOutline" checked={showOutline} onCheckedChange={setShowOutline} aria-label="Toggle subtitle outline"/>
+
+                {/* Upgraded: Outline Settings */}
+                <div className="space-y-4 pt-2 border-t border-border">
+                  <div className="flex items-center justify-between space-x-2">
+                    <Label htmlFor="show-outline" className="text-sm font-medium">Show Subtitle Outline</Label>
+                    <Switch id="show-outline" name="showOutline" checked={showOutline} onCheckedChange={setShowOutline} aria-label="Toggle subtitle outline"/>
+                  </div>
+                  {showOutline && (
+                    <div className="space-y-3 pl-3 border-l-2 border-primary/20 animate-in fade-in slide-in-from-top-1 duration-150">
+                      <div className="space-y-2">
+                        <Label htmlFor="outline-thickness" className="flex justify-between text-xs">
+                          <span>Outline Thickness:</span> <span>{outlineThickness}px</span>
+                        </Label>
+                        <Slider id="outline-thickness" min={1} max={15} step={1} value={[outlineThickness]} onValueChange={(val) => setOutlineThickness(val[0])} aria-label={`Outline thickness: ${outlineThickness} pixels`} />
+                      </div>
+                      <ColorPickerCustom value={outlineColor} onChange={setOutlineColor} title="Outline Color" />
+                    </div>
+                  )}
                 </div>
-                 <div className="flex items-center justify-between space-x-2 pt-2">
+
+                {/* Upgraded: Text Shadow / Glow Settings */}
+                <div className="space-y-4 pt-2 border-t border-border">
+                  <div className="flex items-center justify-between space-x-2">
+                    <Label htmlFor="show-shadow" className="text-sm font-medium">Text Glow / Shadow</Label>
+                    <Switch id="show-shadow" name="showShadow" checked={showShadow} onCheckedChange={setShowShadow} aria-label="Toggle text glow or shadow"/>
+                  </div>
+                  {showShadow && (
+                    <div className="space-y-3 pl-3 border-l-2 border-primary/20 animate-in fade-in slide-in-from-top-1 duration-150">
+                      <div className="space-y-2">
+                        <Label htmlFor="shadow-blur" className="flex justify-between text-xs">
+                          <span>Blur Radius:</span> <span>{shadowBlur}px</span>
+                        </Label>
+                        <Slider id="shadow-blur" min={0} max={25} step={1} value={[shadowBlur]} onValueChange={(val) => setShadowBlur(val[0])} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <Label htmlFor="shadow-offset-x" className="text-[10px] text-muted-foreground">Offset X</Label>
+                          <Slider id="shadow-offset-x" min={-15} max={15} step={1} value={[shadowOffsetX]} onValueChange={(val) => setShadowOffsetX(val[0])} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="shadow-offset-y" className="text-[10px] text-muted-foreground">Offset Y</Label>
+                          <Slider id="shadow-offset-y" min={-15} max={15} step={1} value={[shadowOffsetY]} onValueChange={(val) => setShadowOffsetY(val[0])} />
+                        </div>
+                      </div>
+                      <ColorPickerCustom value={shadowColor} onChange={setShadowColor} title="Glow / Shadow Color" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Upgraded: Background Canvas Settings */}
+                <div className="space-y-4 pt-2 border-t border-border">
+                  <div className="flex items-center justify-between space-x-2">
+                    <Label htmlFor="show-background" className="text-sm font-medium">Video Background Canvas</Label>
+                    <Switch id="show-background" name="showBackground" checked={showBackground} onCheckedChange={setShowBackground} aria-label="Toggle background canvas"/>
+                  </div>
+                  {showBackground && (
+                    <div className="space-y-3 pl-3 border-l-2 border-primary/20 animate-in fade-in slide-in-from-top-1 duration-150">
+                      <ColorPickerCustom value={backgroundColor} onChange={setBackgroundColor} title="Background Color" />
+                      <FileUploadInput 
+                        id="bg-image-upload" 
+                        label="Background Image (.png, .jpg)" 
+                        accept="image/*" 
+                        icon={<Palette size={18} />} 
+                        onFileChange={setBackgroundImageFile} 
+                        fileName={backgroundImageFile?.name}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Upgraded: Alternating Multi-line Styles */}
+                <div className="space-y-4 pt-2 border-t border-border">
+                  <div className="space-y-2">
+                    <Label htmlFor="alternate-line-styles">Line Style Alternation</Label>
+                    <Select value={alternateLineStyles} onValueChange={setAlternateLineStyles}>
+                      <SelectTrigger id="alternate-line-styles" aria-label="Select line coloring option">
+                        <SelectValue placeholder="Select coloring style" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Single Style Line-by-Line</SelectItem>
+                        <SelectItem value="alternate-color">Alternate Odd/Even Colors</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {alternateLineStyles === 'alternate-color' && (
+                    <div className="pl-3 border-l-2 border-primary/20 animate-in fade-in slide-in-from-top-1 duration-150">
+                      <ColorPickerCustom value={alternateColor} onChange={setAlternateColor} title="Odd Line Text Color" />
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between space-x-2 pt-2 border-t border-border">
                   <Label htmlFor="randomize-positions" className="text-sm">Random & Bouncing Positions</Label>
                   <Switch id="randomize-positions" name="randomizePositions" checked={randomizePositions} onCheckedChange={setRandomizePositions} aria-label="Toggle random and bouncing positions"/>
                 </div>
@@ -1327,11 +1722,13 @@ export default function SubtitleWeaverPage() {
                     </div>
                   </div>
                 )}
-                 <div className="space-y-2 pt-2">
+                
+                <div className="space-y-2 pt-2 border-t border-border">
                   <Label htmlFor="text-opacity" className="flex justify-between items-center"><span className="flex items-center gap-2"><Droplets size={16}/> Opacity:</span> <span>{textOpacity}%</span></Label>
                   <Slider id="text-opacity" min={0} max={100} step={1} value={[textOpacity]} onValueChange={(value) => setTextOpacity(value[0])} aria-label={`Text opacity: ${textOpacity} percent`} />
                 </div>
-                <div className="space-y-2 pt-2">
+
+                <div className="space-y-2 pt-2 border-t border-border">
                   <Label htmlFor="text-effect" className="flex items-center gap-2"><Wand2 size={16}/> Text Effect</Label>
                   <Select value={textEffect} onValueChange={setTextEffect}>
                     <SelectTrigger id="text-effect" aria-label="Select text effect">
@@ -1340,15 +1737,18 @@ export default function SubtitleWeaverPage() {
                     <SelectContent>
                       <SelectItem value="none">None</SelectItem>
                       <SelectItem value="smoke">Smoke</SelectItem>
+                      <SelectItem value="typewriter">Typewriter Reveal</SelectItem>
+                      <SelectItem value="scalePop">Scale Pop Animation</SelectItem>
                     </SelectContent>
                   </Select>
-                   {textEffect === 'smoke' && (
+                  {(textEffect === 'smoke' || textEffect === 'scalePop') && (
                     <p className="text-xs text-muted-foreground pt-1">
-                      Smoke is a complex effect only visible in the final rendered video.
+                      Note: This effect is only visible in the final rendered video.
                     </p>
                   )}
                 </div>
-                 <div className="space-y-2 pt-2">
+
+                <div className="space-y-2 pt-2 border-t border-border">
                   <Label htmlFor="text-case">Text Case</Label>
                   <Select value={textCase} onValueChange={setTextCase} name="textCase">
                     <SelectTrigger id="text-case" aria-label="Select text case">
@@ -1362,45 +1762,14 @@ export default function SubtitleWeaverPage() {
                   </Select>
                 </div>
 
-                <div className="space-y-2 pt-2">
-                  <Label htmlFor="text-color">Base Text Color</Label>
-                  <Select value={textColor} onValueChange={setTextColor}>
-                    <SelectTrigger id="text-color" aria-label="Select base text color">
-                      <SelectValue placeholder="Select color" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="#ffffff">White</SelectItem>
-                      <SelectItem value="#f3f4f6">Off-White</SelectItem>
-                      <SelectItem value="#d1d5db">Light Gray</SelectItem>
-                      <SelectItem value="#fbbf24">Gold</SelectItem>
-                      <SelectItem value="#06b6d4">Neon Cyan</SelectItem>
-                      <SelectItem value="#22c55e">Neon Green</SelectItem>
-                      <SelectItem value="#ec4899">Hot Pink</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <Label htmlFor="outline-color">Border / Outline Color</Label>
-                  <Select value={outlineColor} onValueChange={setOutlineColor}>
-                    <SelectTrigger id="outline-color" aria-label="Select outline color">
-                      <SelectValue placeholder="Select color" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="#000000">Black</SelectItem>
-                      <SelectItem value="#1f2937">Dark Gray</SelectItem>
-                      <SelectItem value="#ffffff">White</SelectItem>
-                      <SelectItem value="#fbbf24">Gold</SelectItem>
-                      <SelectItem value="#06b6d4">Neon Cyan</SelectItem>
-                      <SelectItem value="#22c55e">Neon Green</SelectItem>
-                      <SelectItem value="#ec4899">Hot Pink</SelectItem>
-                    </SelectContent>
-                  </Select>
+                {/* Custom Color Pickers */}
+                <div className="space-y-4 pt-4 border-t border-border">
+                  <ColorPickerCustom value={textColor} onChange={setTextColor} title="Base Text Color" />
                 </div>
                 
                 {subtitleEntries.some(e => e.words && e.words.length > 0) && (
-                  <>
-                    <div className="space-y-2 pt-2">
+                  <div className="space-y-4 pt-2 border-t border-border">
+                    <div className="space-y-2">
                       <Label htmlFor="highlight-style">Highlight Style</Label>
                       <Select value={highlightStyle} onValueChange={setHighlightStyle}>
                         <SelectTrigger id="highlight-style" aria-label="Select highlight style">
@@ -1414,22 +1783,57 @@ export default function SubtitleWeaverPage() {
                       </Select>
                     </div>
 
-                    <div className="space-y-2 pt-2">
-                      <Label htmlFor="highlight-color">Highlight Color</Label>
-                      <Select value={highlightColor} onValueChange={setHighlightColor}>
-                        <SelectTrigger id="highlight-color" aria-label="Select highlight color">
-                          <SelectValue placeholder="Select color" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="#fbbf24">Gold</SelectItem>
-                          <SelectItem value="#06b6d4">Neon Cyan</SelectItem>
-                          <SelectItem value="#22c55e">Neon Green</SelectItem>
-                          <SelectItem value="#ec4899">Hot Pink</SelectItem>
-                          <SelectItem value="#ffffff">White (No Highlight)</SelectItem>
-                        </SelectContent>
-                      </Select>
+                    <ColorPickerCustom value={highlightColor} onChange={setHighlightColor} title="Highlight Color" />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Upgraded: Custom Preset Templates Manager */}
+            <Card className="shadow-xl rounded-xl overflow-hidden">
+              <CardHeader className="bg-card">
+                <CardTitle className="flex items-center gap-2 text-xl"><FolderHeart size={24} className="text-primary" /> Style Presets</CardTitle>
+                <CardDescription>Save and switch between custom style templates.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 p-6">
+                <div className="space-y-2">
+                  <Label htmlFor="preset-name">New Template Name</Label>
+                  <div className="flex gap-2">
+                    <Input id="preset-name" placeholder="e.g. Cyberpunk Blue" className="h-9 text-sm" />
+                    <Button 
+                      onClick={() => {
+                        const inputEl = document.getElementById('preset-name') as HTMLInputElement;
+                        if (inputEl && inputEl.value.trim()) {
+                          savePreset(inputEl.value.trim());
+                          inputEl.value = '';
+                        }
+                      }}
+                      className="bg-primary hover:bg-primary/95 text-primary-foreground h-9 text-xs"
+                    >
+                      Save
+                    </Button>
+                  </div>
+                </div>
+
+                {customPresets.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-border">
+                    <Label className="text-xs text-muted-foreground uppercase tracking-wider block">Load Preset</Label>
+                    <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                      {customPresets.map((preset, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2 bg-muted/40 border border-border rounded-md text-sm">
+                          <span className="font-semibold truncate max-w-[120px]">{preset.name}</span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Button variant="outline" onClick={() => loadPreset(preset)} className="h-7 px-2.5 text-[10px] font-bold">
+                              Load
+                            </Button>
+                            <Button variant="destructive" onClick={() => deletePreset(preset.name)} className="h-7 px-2.5 text-[10px] font-bold">
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </>
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -1468,23 +1872,11 @@ export default function SubtitleWeaverPage() {
                       </Select>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="waveform-color">Waveform Color</Label>
-                      <Select value={waveformColor} onValueChange={setWaveformColor}>
-                        <SelectTrigger id="waveform-color" aria-label="Select waveform color">
-                          <SelectValue placeholder="Select color" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="#fbbf24">Gold</SelectItem>
-                          <SelectItem value="#06b6d4">Neon Cyan</SelectItem>
-                          <SelectItem value="#22c55e">Neon Green</SelectItem>
-                          <SelectItem value="#ec4899">Hot Pink</SelectItem>
-                          <SelectItem value="#ffffff">White</SelectItem>
-                        </SelectContent>
-                      </Select>
+                    <div className="pt-2">
+                      <ColorPickerCustom value={waveformColor} onChange={setWaveformColor} title="Waveform Color" />
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="space-y-2 pt-2">
                       <Label htmlFor="waveform-position-x" className="flex justify-between"><span>Position (X):</span> <span>{waveformPositionX}%</span></Label>
                       <Slider id="waveform-position-x" min={0} max={100} step={1} value={[waveformPositionX]} onValueChange={(value) => setWaveformPositionX(value[0])} aria-label={`Waveform X position: ${waveformPositionX} percent`} />
                     </div>
@@ -1512,6 +1904,87 @@ export default function SubtitleWeaverPage() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Upgraded: Export Settings Card */}
+            <Card className="shadow-xl rounded-xl overflow-hidden">
+              <CardHeader className="bg-card">
+                <CardTitle className="flex items-center gap-2 text-xl"><MonitorPlay size={24} className="text-primary" /> Export Settings</CardTitle>
+                <CardDescription>Select video resolution, quality/bitrate, and format.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 p-6">
+                <div className="space-y-3">
+                  <Label htmlFor="export-format">Export Format</Label>
+                  <Select value={exportFormat} onValueChange={setExportFormat}>
+                    <SelectTrigger id="export-format" aria-label="Select export file format">
+                      <SelectValue placeholder="Select format" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="webm">WebM (.webm — Recommended, Instant Download)</SelectItem>
+                      <SelectItem value="mp4">MP4 (.mp4 — Very Slow, In-Browser Transcode)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  {exportFormat === 'webm' && (
+                    <div className="p-3 bg-green-500/10 border border-green-500/20 text-emerald-500 rounded-lg text-[11px] leading-relaxed animate-in fade-in duration-200">
+                      <strong>Recommended:</strong> WebM uses browser-native hardware accelerated recording. It completes instantly after recording with zero CPU/wait time. Most modern media players (VLC, browsers, Premiere) support WebM playback.
+                    </div>
+                  )}
+                  {exportFormat === 'mp4' && (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-500 rounded-lg text-[11px] leading-relaxed animate-in fade-in duration-200">
+                      <strong>Warning (Very Slow):</strong> MP4 requires software-encoding every frame in a single CPU thread inside the browser sandbox (no GPU acceleration).
+                      <ul className="list-disc list-inside mt-1 space-y-0.5">
+                        <li>8-second video: ~2–5 minutes.</li>
+                        <li>4-minute video: up to 1–2 hours.</li>
+                      </ul>
+                      To avoid extremely long wait times, we highly recommend exporting to <strong>WebM</strong> instead.
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="export-resolution">Resolution Preset</Label>
+                  <Select value={exportResolution} onValueChange={setExportResolution}>
+                    <SelectTrigger id="export-resolution" aria-label="Select export resolution">
+                      <SelectValue placeholder="Select resolution" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="720p">720p (HD, 1280x720)</SelectItem>
+                      <SelectItem value="1080p">1080p (Full HD, 1920x1080)</SelectItem>
+                      <SelectItem value="1440p">1440p (2K HD, 2560x1440)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="export-bitrate">Video Bitrate (Quality)</Label>
+                  <Select value={exportBitrate} onValueChange={setExportBitrate}>
+                    <SelectTrigger id="export-bitrate" aria-label="Select export quality bitrate">
+                      <SelectValue placeholder="Select bitrate" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low (10 Mbps, small file)</SelectItem>
+                      <SelectItem value="medium">Medium (20 Mbps, balanced)</SelectItem>
+                      <SelectItem value="high">High (40 Mbps, sharp output)</SelectItem>
+                      <SelectItem value="ultra">Ultra (80 Mbps, max quality)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="export-fps">Frame Rate (FPS)</Label>
+                  <Select value={exportFps.toString()} onValueChange={(val) => setExportFps(parseInt(val, 10))}>
+                    <SelectTrigger id="export-fps" aria-label="Select export frame rate">
+                      <SelectValue placeholder="Select frame rate" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="24">24 FPS (Cinematic, lower CPU load)</SelectItem>
+                      <SelectItem value="30">30 FPS (Standard playback)</SelectItem>
+                      <SelectItem value="60">60 FPS (Ultra smooth, higher CPU load)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
           <div className="lg:col-span-2 space-y-6 lg:sticky lg:top-8 h-fit">
@@ -1522,6 +1995,37 @@ export default function SubtitleWeaverPage() {
               </CardHeader>
               <CardContent className="flex-grow flex flex-col items-center justify-center space-y-4 p-6">
                 <div className="w-full aspect-video bg-muted rounded-lg flex items-center justify-center overflow-hidden border border-border shadow-inner relative">
+                  {isProcessing && (
+                    <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-300">
+                      <Loader2 size={48} className="text-primary animate-spin mb-4" />
+                      <h4 className="text-lg font-bold text-foreground">Processing Video</h4>
+                      <p className="text-sm text-muted-foreground max-w-xs mt-1">
+                        {processingProgress < 95 || exportFormat !== 'mp4' ? (
+                          `Recording canvas frames: ${processingProgress}%...`
+                        ) : (
+                          <>
+                            <span>Converting to MP4: {transcodeProgress}% (Transcoding in browser)...</span>
+                            {transcodeEta && (
+                              <span className="block text-xs font-semibold text-primary mt-1 animate-pulse">
+                                {transcodeEta}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </p>
+                      <div className="w-48 bg-muted rounded-full h-2 mt-4 overflow-hidden border border-border">
+                        <div 
+                          className="bg-primary h-full transition-all duration-300 ease-out" 
+                          style={{ width: `${(processingProgress < 95 || exportFormat !== 'mp4') ? processingProgress : 95 + (transcodeProgress * 0.05)}%` }}
+                        />
+                      </div>
+                      {processingProgress >= 95 && exportFormat === 'mp4' && (
+                        <p className="text-[10px] text-amber-500 mt-2 max-w-xs leading-relaxed">
+                          Note: Transcoding MP4 is CPU-intensive. Keep this tab active to prevent browser throttling.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {videoPreviewUrl ? (
                     <>
                       <video
